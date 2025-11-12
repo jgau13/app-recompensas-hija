@@ -1,0 +1,1001 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App de Recompensas</title>
+    <!-- Carga de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Carga de Firebase -->
+    <script type="module">
+        // Importaciones de Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            onAuthStateChanged,
+            signInWithCustomToken
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            collection, 
+            doc, 
+            addDoc, 
+            setDoc, 
+            getDoc,
+            updateDoc,
+            deleteDoc,
+            onSnapshot,
+            query,
+            where,
+            getDocs,
+            Timestamp,
+            writeBatch,
+            serverTimestamp
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Configuración de Firebase ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : { apiKey: "TU_API_KEY_AQUI", authDomain: "TU_DOMINIO", projectId: "TU_PROJECT_ID" };
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-reward-app';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // --- CÓDIGO PIN ---
+        const ADMIN_PIN = '0000'; // ¡Puedes cambiar este PIN!
+
+        // --- Inicialización ---
+        let app, db, auth;
+        let userId; 
+        let userProfileRef;
+        let tasksRef, pendingTasksRef, rewardsRef, redeemedRewardsRef, penaltiesRef;
+
+        // --- Estado Local ---
+        let localUserMode = 'unknown'; // 'unknown', 'child', 'admin'
+        let localTasks = [];
+        let localPendingTasks = [];
+        let localRewards = [];
+        let localRedeemedRewards = [];
+        let localPenalties = [];
+        let localTotalPoints = 0;
+        let localLastReset = null;
+        let currentEditingTaskId = null;
+        let currentEditingPenaltyId = null;
+        let hasInitialDataLoaded = false; 
+
+        // --- Elementos del DOM ---
+        let pages = {};
+        let buttons = {};
+        let containers = {};
+        let forms = {};
+        let elements = {};
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            cacheDOMElements();
+            setupUIListeners();
+            showLoading(true);
+
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                await setupAuth();
+                setupFirestoreReferences(); 
+                setupFirestoreListeners(); 
+                
+                checkCachedMode(); // Decide si mostrar login o la app
+
+            } catch (error) {
+                console.error("Error crítico en la inicialización:", error);
+                if(elements.totalPointsDisplay) elements.totalPointsDisplay.textContent = "Error";
+                showPage('page-login'); // Mostrar login si hay error
+            } finally {
+                showLoading(false);
+            }
+        });
+
+        function cacheDOMElements() {
+            pages = {
+                'page-login': document.getElementById('page-login'),
+                'page-pin-modal': document.getElementById('page-pin-modal'),
+                'page-main': document.getElementById('page-main'),
+                'page-tasks': document.getElementById('page-tasks'),
+                'page-points': document.getElementById('page-points'),
+                'page-evaluate': document.getElementById('page-evaluate'),
+                'page-redeem': document.getElementById('page-redeem'),
+                'page-redeemed-list': document.getElementById('page-redeemed-list'),
+                'page-penalties': document.getElementById('page-penalties')
+            };
+            
+            buttons = {
+                'btn-mode-child': document.getElementById('btn-mode-child'),
+                'btn-mode-admin': document.getElementById('btn-mode-admin'),
+                'btn-pin-cancel': document.getElementById('btn-pin-cancel'),
+                'btn-logout': document.getElementById('btn-logout'),
+                'btn-tasks': document.getElementById('btn-tasks'),
+                'btn-points': document.getElementById('btn-points'),
+                'btn-evaluate': document.getElementById('btn-evaluate'),
+                'btn-redeem': document.getElementById('btn-redeem'),
+                'btn-redeemed-list': document.getElementById('btn-redeemed-list'),
+                'btn-penalties': document.getElementById('btn-penalties'),
+                back: document.querySelectorAll('.btn-back')
+            };
+
+            containers = {
+                tasksList: document.getElementById('tasks-list-container'),
+                pendingTasksList: document.getElementById('pending-tasks-list-container'),
+                activeTasksEditList: document.getElementById('active-tasks-edit-list-container'),
+                rewardsList: document.getElementById('rewards-list-container'),
+                redeemedRewardsList: document.getElementById('redeemed-rewards-list-container'),
+                penaltiesApplyList: document.getElementById('penalties-apply-list-container'),
+                penaltiesEditList: document.getElementById('penalties-edit-list-container')
+            };
+
+            forms = {
+                'form-pin': document.getElementById('form-pin'),
+                addTask: document.getElementById('form-add-task'),
+                editTask: document.getElementById('form-edit-task'),
+                addReward: document.getElementById('form-add-reward'),
+                addPenalty: document.getElementById('form-add-penalty'),
+                editPenalty: document.getElementById('form-edit-penalty')
+            };
+
+            elements = {
+                totalPointsDisplay: document.getElementById('total-points-display'),
+                totalPointsHeader: document.getElementById('total-points-header'),
+                loading: document.getElementById('loading-overlay'),
+                pinInput: document.getElementById('pin-input'),
+                pinError: document.getElementById('pin-error'),
+                editTaskName: document.getElementById('edit-task-name'),
+                editTaskPoints: document.getElementById('edit-task-points'),
+                editTaskCancel: document.getElementById('btn-edit-task-cancel'),
+                editPenaltyName: document.getElementById('edit-penalty-name'),
+                editPenaltyPoints: document.getElementById('edit-penalty-points'),
+                editPenaltyCancel: document.getElementById('btn-edit-penalty-cancel')
+            };
+        }
+
+        async function setupAuth() {
+            return new Promise((resolve, reject) => {
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        resolve(user);
+                    } else if (initialAuthToken) {
+                        try {
+                            const userCredential = await signInWithCustomToken(auth, initialAuthToken);
+                            userId = userCredential.user.uid;
+                            resolve(userCredential.user);
+                        } catch (e) { console.error("Error signing in with token", e); reject(e); }
+                    } else {
+                        try {
+                            const userCredential = await signInAnonymously(auth);
+                            userId = userCredential.user.uid;
+                            resolve(userCredential.user);
+                        } catch (e) { console.error("Error signing in anonymously", e); reject(e); }
+                    }
+                });
+            });
+        }
+
+        function setupFirestoreReferences() {
+            const userDocPath = `/artifacts/${appId}/users/${userId}`;
+            userProfileRef = doc(db, userDocPath);
+            
+            tasksRef = collection(db, userDocPath, 'tasks');
+            pendingTasksRef = collection(db, userDocPath, 'pendingTasks');
+            rewardsRef = collection(db, userDocPath, 'rewards');
+            redeemedRewardsRef = collection(db, userDocPath, 'redeemedRewards');
+            penaltiesRef = collection(db, userDocPath, 'penalties');
+        }
+
+        function setupUIListeners() {
+            // Login
+            buttons['btn-mode-child'].addEventListener('click', () => setMode('child'));
+            buttons['btn-mode-admin'].addEventListener('click', () => showPage('page-pin-modal'));
+            buttons['btn-pin-cancel'].addEventListener('click', () => {
+                elements.pinInput.value = '';
+                elements.pinError.classList.add('hidden');
+                showPage('page-login');
+            });
+            forms['form-pin'].addEventListener('submit', handlePinSubmit);
+            buttons['btn-logout'].addEventListener('click', logout);
+            
+            // Navegación principal
+            // *** CORRECCIÓN AQUÍ ***
+            // Se usa la notación de corchetes [] para coincidir con cómo se definieron en cacheDOMElements
+            buttons['btn-tasks'].addEventListener('click', () => showPage('page-tasks'));
+            buttons['btn-points'].addEventListener('click', () => showPage('page-points'));
+            buttons['btn-evaluate'].addEventListener('click', () => showPage('page-evaluate'));
+            buttons['btn-redeem'].addEventListener('click', () => showPage('page-redeem'));
+            buttons['btn-redeemed-list'].addEventListener('click', () => showPage('page-redeemed-list'));
+            buttons['btn-penalties'].addEventListener('click', () => showPage('page-penalties'));
+            
+            buttons.back.forEach(btn => {
+                btn.addEventListener('click', () => showPage('page-main'));
+            });
+
+            // Forms Admin
+            forms.addTask.addEventListener('submit', handleAddTask);
+            forms.editTask.addEventListener('submit', handleEditTaskSubmit);
+            elements.editTaskCancel.addEventListener('click', cancelEditTask);
+            forms.addReward.addEventListener('submit', handleAddReward);
+            forms.addPenalty.addEventListener('submit', handleAddPenalty);
+            forms.editPenalty.addEventListener('submit', handleEditPenaltySubmit);
+            elements.editPenaltyCancel.addEventListener('click', cancelEditPenalty);
+        }
+
+        // --- Lógica de Modo/Login ---
+        
+        function checkCachedMode() {
+            const mode = localStorage.getItem('appMode');
+            if (mode === 'admin' || mode === 'child') {
+                setMode(mode);
+            } else {
+                showPage('page-login');
+            }
+        }
+
+        function setMode(mode) {
+            localUserMode = mode;
+            localStorage.setItem('appMode', mode);
+            updateAdminUI(mode);
+            showPage('page-main');
+        }
+
+        function logout() {
+            localUserMode = 'unknown';
+            localStorage.removeItem('appMode');
+            updateAdminUI('unknown');
+            showPage('page-login');
+        }
+
+        function handlePinSubmit(e) {
+            e.preventDefault();
+            const pin = elements.pinInput.value;
+            if (pin === ADMIN_PIN) {
+                elements.pinInput.value = '';
+                elements.pinError.classList.add('hidden');
+                setMode('admin');
+            } else {
+                elements.pinError.classList.remove('hidden');
+            }
+        }
+
+        function updateAdminUI(mode) {
+            const adminElements = document.querySelectorAll('.admin-only');
+            if (mode === 'child') {
+                adminElements.forEach(el => el.classList.add('hidden'));
+                buttons['btn-logout'].classList.remove('hidden'); // <-- AHORA SE MUESTRA en modo hija
+            } else if (mode === 'admin') {
+                adminElements.forEach(el => el.classList.remove('hidden'));
+                buttons['btn-logout'].classList.remove('hidden'); // Mostrar logout en modo admin
+            } else {
+                adminElements.forEach(el => el.classList.add('hidden'));
+                buttons['btn-logout'].classList.add('hidden');
+            }
+        }
+
+        function showPage(pageId) {
+            // Primero, asegurarse que pages[pageId] no sea nulo
+            if (pages[pageId]) {
+                 Object.values(pages).forEach(page => {
+                    if (page) page.classList.add('hidden');
+                });
+                pages[pageId].classList.remove('hidden');
+            } else {
+                console.warn(`Página no encontrada: ${pageId}`);
+            }
+        }
+
+        function showLoading(isLoading) {
+            if (elements.loading) {
+                if (isLoading) elements.loading.classList.remove('hidden');
+                else elements.loading.classList.add('hidden');
+            }
+        }
+
+        // --- Lógica de Reinicio Diario ---
+        async function checkDailyReset() {
+            const today = new Date().toISOString().split('T')[0];
+            if (localLastReset && localLastReset !== today) {
+                console.log(`REINICIO DIARIO: Hoy es ${today}, último reseteo fue ${localLastReset}. Limpiando...`);
+                showLoading(true);
+                try {
+                    // Limpiar tareas pendientes
+                    const pendingSnapshot = await getDocs(pendingTasksRef);
+                    const batch = writeBatch(db);
+                    pendingSnapshot.docs.forEach(d => batch.delete(d.ref));
+                    
+                    // Actualizar fecha de último reseteo
+                    batch.set(userProfileRef, { lastReset: today }, { merge: true });
+                    
+                    await batch.commit();
+                    localLastReset = today; // Actualizar estado local
+                } catch (err) {
+                    console.error("Error durante el reseteo diario:", err);
+                } finally {
+                    showLoading(false);
+                }
+            } else if (!localLastReset) {
+                // Si es la primera vez que se abre la app, guardar la fecha de hoy
+                console.log("Estableciendo fecha de reseteo inicial.");
+                await setDoc(userProfileRef, { lastReset: today }, { merge: true });
+                localLastReset = today;
+            }
+        }
+
+        // --- Renderizado ---
+
+        function renderTasksList() {
+            if (!containers.tasksList) return;
+            containers.tasksList.innerHTML = '';
+            if (localTasks.length === 0) {
+                containers.tasksList.innerHTML = '<p class="text-gray-500 text-center">No hay tareas.</p>';
+                return;
+            }
+            localTasks.sort((a, b) => a.name.localeCompare(b.name));
+
+            localTasks.forEach(task => {
+                const isPending = localPendingTasks.some(pt => pt.taskId === task.id);
+                const taskEl = document.createElement('div');
+                taskEl.className = `p-4 rounded-lg shadow flex justify-between items-center ${isPending ? 'bg-gray-200' : 'bg-white'}`;
+                taskEl.innerHTML = `
+                    <div>
+                        <span class="font-semibold text-lg ${isPending ? 'text-gray-500 line-through' : 'text-gray-800'}">${task.name}</span>
+                        <span class="text-sm ${isPending ? 'text-gray-400' : 'text-gray-500'}">(${task.points} pts)</span>
+                    </div>
+                    <button class="btn-complete-task text-3xl p-2 rounded-full transition-transform duration-200 ${isPending ? 'opacity-50 cursor-not-allowed' : 'hover:scale-125'}" data-id="${task.id}" ${isPending ? 'disabled' : ''}>
+                        ${isPending ? '⏳' : '✅'}
+                    </button>
+                `;
+                if (!isPending) {
+                    taskEl.querySelector('.btn-complete-task').addEventListener('click', (e) => {
+                        e.currentTarget.disabled = true;
+                        e.currentTarget.innerHTML = '⏳';
+                        handleCompleteTask(task.id, task.name, task.points);
+                    });
+                }
+                containers.tasksList.appendChild(taskEl);
+            });
+        }
+        
+        function renderPendingTasksList() {
+            if (!containers.pendingTasksList) return;
+            containers.pendingTasksList.innerHTML = '';
+            if (localPendingTasks.length === 0) {
+                containers.pendingTasksList.innerHTML = '<p class="text-gray-500 text-center">No hay tareas pendientes.</p>';
+                return;
+            }
+            localPendingTasks.forEach(task => {
+                const taskEl = document.createElement('div');
+                taskEl.className = 'bg-white p-4 rounded-lg shadow space-y-2';
+                taskEl.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <span class="font-semibold text-lg text-gray-800">${task.name} <span class="text-sm text-gray-500">(${task.points} pts)</span></span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="btn-approve-task bg-green-500 text-white w-full py-2 px-4 rounded-full font-bold hover:bg-green-600 transition-colors" data-id="${task.id}" data-points="${task.points}">Aprobar</button>
+                        <button class="btn-reject-task bg-red-500 text-white w-full py-2 px-4 rounded-full font-bold hover:bg-red-600 transition-colors" data-id="${task.id}">Rechazar</button>
+                    </div>
+                `;
+                taskEl.querySelector('.btn-approve-task').addEventListener('click', (e) => handleApproveTask(e.currentTarget.dataset.id, parseInt(e.currentTarget.dataset.points, 10)));
+                taskEl.querySelector('.btn-reject-task').addEventListener('click', (e) => handleRejectTask(e.currentTarget.dataset.id));
+                containers.pendingTasksList.appendChild(taskEl);
+            });
+        }
+
+        function renderActiveTasksEditList() {
+            if (!containers.activeTasksEditList) return;
+            containers.activeTasksEditList.innerHTML = '';
+            if (localTasks.length === 0) return;
+            const sortedTasks = [...localTasks].sort((a, b) => a.name.localeCompare(b.name));
+
+            sortedTasks.forEach(task => {
+                const taskEl = document.createElement('div');
+                taskEl.className = 'bg-white p-3 rounded-lg shadow flex justify-between items-center border border-gray-200';
+                taskEl.innerHTML = `
+                    <div class="overflow-hidden">
+                        <span class="font-semibold text-gray-800 block truncate">${task.name}</span>
+                        <span class="text-xs text-gray-500">${task.points} pts</span>
+                    </div>
+                    <div class="flex gap-1 shrink-0">
+                        <button class="btn-edit-task text-xl p-2 rounded-full hover:bg-blue-100" data-id="${task.id}">✏️</button>
+                        <button class="btn-delete-task text-xl p-2 rounded-full hover:bg-red-100" data-id="${task.id}">🗑️</button>
+                    </div>
+                `;
+                taskEl.querySelector('.btn-edit-task').addEventListener('click', () => startEditTask(task.id, task.name, task.points));
+                taskEl.querySelector('.btn-delete-task').addEventListener('click', (e) => {
+                    handleDeleteTask(e.currentTarget.dataset.id);
+                });
+                containers.activeTasksEditList.appendChild(taskEl);
+            });
+        }
+
+        function renderRewardsList() {
+            if (!containers.rewardsList) return;
+            containers.rewardsList.innerHTML = '';
+            if (localRewards.length === 0) {
+                containers.rewardsList.innerHTML = '<p class="text-gray-500 text-center">No hay recompensas.</p>';
+                return;
+            }
+            localRewards.sort((a, b) => a.cost - b.cost);
+
+            localRewards.forEach(reward => {
+                const canAfford = localTotalPoints >= reward.cost;
+                const rewardEl = document.createElement('div');
+                rewardEl.className = `p-4 rounded-lg shadow flex justify-between items-center ${canAfford ? 'bg-white' : 'bg-gray-100'}`;
+                rewardEl.innerHTML = `
+                    <div>
+                        <span class="font-semibold text-lg ${canAfford ? 'text-gray-800' : 'text-gray-500'}">${reward.name}</span>
+                        <span class="text-sm ${canAfford ? 'text-yellow-600' : 'text-gray-400'}">(${reward.cost} pts)</span>
+                    </div>
+                    <button class="btn-redeem-reward bg-purple-500 text-white py-2 px-5 rounded-full font-bold transition-colors ${canAfford ? 'hover:bg-purple-600' : 'opacity-50 cursor-not-allowed'}" data-id="${reward.id}" data-cost="${reward.cost}" data-name="${reward.name}" ${canAfford ? '' : 'disabled'}>
+                        Canjear
+                    </button>
+                `;
+                if (canAfford) {
+                    rewardEl.querySelector('.btn-redeem-reward').addEventListener('click', (e) => {
+                        handleRedeemReward(reward.id, reward.name, reward.cost);
+                    });
+                }
+                containers.rewardsList.appendChild(rewardEl);
+            });
+        }
+
+        function renderRedeemedRewardsList() {
+            if (!containers.redeemedRewardsList) return;
+            containers.redeemedRewardsList.innerHTML = '';
+            if (localRedeemedRewards.length === 0) {
+                containers.redeemedRewardsList.innerHTML = '<p class="text-gray-500 text-center">Aún no se ha canjeado nada.</p>';
+                return;
+            }
+            const sortedList = [...localRedeemedRewards].sort((a, b) => b.redeemedAt.toMillis() - a.redeemedAt.toMillis());
+
+            sortedList.forEach(item => {
+                const itemEl = document.createElement('div');
+                itemEl.className = 'bg-white p-4 rounded-lg shadow flex justify-between items-center';
+                const date = item.redeemedAt.toDate().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                itemEl.innerHTML = `
+                    <div>
+                        <span class="font-semibold text-lg text-gray-800">${item.name}</span>
+                        <span class="text-sm text-gray-500 block">(${item.cost} pts)</span>
+                    </div>
+                    <span class="text-gray-600 text-sm">${date}</span>
+                `;
+                containers.redeemedRewardsList.appendChild(itemEl);
+            });
+        }
+
+        function renderPenaltiesApplyList() {
+            if (!containers.penaltiesApplyList) return;
+            containers.penaltiesApplyList.innerHTML = '';
+            if (localPenalties.length === 0) {
+                containers.penaltiesApplyList.innerHTML = '<p class="text-gray-500 text-center">No hay penalidades.</p>';
+                return;
+            }
+            localPenalties.sort((a, b) => a.name.localeCompare(b.name));
+            localPenalties.forEach(p => {
+                const el = document.createElement('div');
+                el.className = 'bg-white p-4 rounded-lg shadow flex justify-between items-center';
+                el.innerHTML = `
+                    <div>
+                        <span class="font-semibold text-lg text-gray-800">${p.name}</span>
+                        <span class="text-sm text-red-600">(${p.points} pts)</span>
+                    </div>
+                    <button class="btn-apply-penalty bg-red-500 text-white py-2 px-5 rounded-full font-bold hover:bg-red-600" data-name="${p.name}" data-points="${p.points}">
+                        Aplicar
+                    </button>
+                `;
+                el.querySelector('.btn-apply-penalty').addEventListener('click', (e) => {
+                    handleApplyPenalty(p.name, p.points);
+                });
+                containers.penaltiesApplyList.appendChild(el);
+            });
+        }
+        
+        function renderPenaltiesEditList() {
+            if (!containers.penaltiesEditList) return;
+            containers.penaltiesEditList.innerHTML = '';
+            if (localPenalties.length === 0) return;
+            localPenalties.forEach(p => {
+                const el = document.createElement('div');
+                el.className = 'bg-white p-3 rounded-lg shadow flex justify-between items-center border border-gray-200';
+                el.innerHTML = `
+                    <div>
+                        <span class="font-semibold text-gray-800">${p.name}</span>
+                        <span class="text-xs text-red-600">${p.points} pts</span>
+                    </div>
+                    <div class="flex gap-1">
+                        <button class="btn-edit-penalty text-xl p-2 rounded-full hover:bg-blue-100" data-id="${p.id}">✏️</button>
+                        <button class="btn-delete-penalty text-xl p-2 rounded-full hover:bg-red-100" data-id="${p.id}">🗑️</button>
+                    </div>
+                `;
+                el.querySelector('.btn-edit-penalty').addEventListener('click', () => startEditPenalty(p.id, p.name, p.points));
+                el.querySelector('.btn-delete-penalty').addEventListener('click', (e) => {
+                    handleDeletePenalty(e.currentTarget.dataset.id);
+                });
+                containers.penaltiesEditList.appendChild(el);
+            });
+        }
+        
+        function updatePointsDisplay() {
+            const points = localTotalPoints || 0;
+            if (elements.totalPointsDisplay) elements.totalPointsDisplay.textContent = `${points}`;
+            if (elements.totalPointsHeader) elements.totalPointsHeader.textContent = `${points} Pts`;
+            if (pages['page-redeem'] && !pages['page-redeem'].classList.contains('hidden')) renderRewardsList();
+        }
+
+        // --- Lógica de Edición (Tareas) ---
+        function startEditTask(id, name, points) {
+            currentEditingTaskId = id;
+            elements.editTaskName.value = name;
+            elements.editTaskPoints.value = points;
+            forms.editTask.classList.remove('hidden');
+            forms.addTask.classList.add('hidden');
+        }
+        function cancelEditTask() {
+            currentEditingTaskId = null;
+            forms.editTask.classList.add('hidden');
+            forms.addTask.classList.remove('hidden');
+            forms.editTask.reset();
+        }
+
+        // --- Lógica de Edición (Penalidades) ---
+        function startEditPenalty(id, name, points) {
+            currentEditingPenaltyId = id;
+            elements.editPenaltyName.value = name;
+            elements.editPenaltyPoints.value = points;
+            forms.editPenalty.classList.remove('hidden');
+            forms.addPenalty.classList.add('hidden');
+        }
+        function cancelEditPenalty() {
+            currentEditingPenaltyId = null;
+            forms.editPenalty.classList.add('hidden');
+            forms.addPenalty.classList.remove('hidden');
+            forms.editPenalty.reset();
+        }
+
+        // --- Handlers (Firebase) ---
+        async function handleAddTask(e) {
+            e.preventDefault();
+            const name = e.target['task-name'].value;
+            const points = parseInt(e.target['task-points'].value, 10);
+            if (!name || points <= 0) return; // No alert
+            showLoading(true);
+            try { await addDoc(tasksRef, { name, points }); e.target.reset(); } 
+            catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+        
+        async function handleEditTaskSubmit(e) {
+            e.preventDefault();
+            if (!currentEditingTaskId) return;
+            const name = elements.editTaskName.value;
+            const points = parseInt(elements.editTaskPoints.value, 10);
+            showLoading(true);
+            try {
+                await updateDoc(doc(db, tasksRef.path, currentEditingTaskId), { name, points });
+                cancelEditTask();
+            } catch (err) { console.error(err); }
+            finally { showLoading(false); }
+        }
+        
+        async function handleDeleteTask(taskId) {
+            showLoading(true);
+            try { await deleteDoc(doc(db, tasksRef.path, taskId)); } 
+            catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+
+        async function handleAddReward(e) {
+            e.preventDefault();
+            const name = e.target['reward-name'].value;
+            const cost = parseInt(e.target['reward-cost'].value, 10);
+            if (!name || cost <= 0) return; // No alert
+            showLoading(true);
+            try { await addDoc(rewardsRef, { name, cost }); e.target.reset(); } 
+            catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+        
+        async function handleCompleteTask(taskId, name, points) {
+            showLoading(true);
+            try { await addDoc(pendingTasksRef, { taskId, name, points, requestedAt: serverTimestamp() }); } 
+            catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+        
+        async function handleApproveTask(id, points) {
+            showLoading(true);
+            try {
+                const newTotal = (localTotalPoints || 0) + points;
+                const batch = writeBatch(db);
+                batch.set(userProfileRef, { totalPoints: newTotal }, { merge: true });
+                batch.delete(doc(db, pendingTasksRef.path, id));
+                await batch.commit();
+            } catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+        
+        async function handleRejectTask(id) {
+            showLoading(true);
+            try { await deleteDoc(doc(db, pendingTasksRef.path, id)); } 
+            catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+        
+        async function handleRedeemReward(id, name, cost) {
+            if (localTotalPoints < cost) return; // No alert
+            showLoading(true);
+            try {
+                const newTotal = localTotalPoints - cost;
+                const batch = writeBatch(db);
+                batch.update(userProfileRef, { totalPoints: newTotal });
+                const newRef = doc(collection(db, redeemedRewardsRef.path));
+                batch.set(newRef, { name, cost, redeemedAt: serverTimestamp() });
+                await batch.commit();
+            } catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+
+        async function handleAddPenalty(e) {
+            e.preventDefault();
+            const name = e.target['penalty-name'].value;
+            const points = parseInt(e.target['penalty-points'].value, 10);
+            if (!name || points <= 0) return; // No alert
+            showLoading(true);
+            try { await addDoc(penaltiesRef, { name, points: Math.abs(points) }); e.target.reset(); } 
+            catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+
+        async function handleEditPenaltySubmit(e) {
+            e.preventDefault();
+            if (!currentEditingPenaltyId) return;
+            const name = elements.editPenaltyName.value;
+            const points = parseInt(elements.editPenaltyPoints.value, 10);
+            showLoading(true);
+            try {
+                await updateDoc(doc(db, penaltiesRef.path, currentEditingPenaltyId), { name, points: Math.abs(points) });
+                cancelEditPenalty();
+            } catch (err) { console.error(err); }
+            finally { showLoading(false); }
+        }
+        
+        async function handleDeletePenalty(id) {
+            showLoading(true);
+            try { await deleteDoc(doc(db, penaltiesRef.path, id)); } 
+            catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+
+        async function handleApplyPenalty(name, points) {
+            showLoading(true);
+            try {
+                const newTotal = (localTotalPoints || 0) - Math.abs(points);
+                await updateDoc(userProfileRef, { totalPoints: newTotal });
+                console.log(`Penalidad "${name}" aplicada. Se restaron ${points} puntos.`);
+            } catch (err) {
+                console.error(err);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // --- Carga Inicial de Datos ---
+        async function populateInitialTasks() {
+            try {
+                const querySnapshot = await getDocs(tasksRef);
+                if (querySnapshot.empty) {
+                    console.log("Cargando tareas iniciales...");
+                    showLoading(true);
+                    const initialTasks = [
+                        { name: "Cepillarse", points: 75 },
+                        { name: "Ordenar ropa lavada", points: 100 },
+                        { name: "Ordenar habitación", points: 125 },
+                        { name: "Desayunar bien", points: 75 },
+                        { name: "Almorzar bien", points: 75 },
+                        { name: "Cenar bien", points: 75 },
+                        { name: "No comer dulces", points: 200 },
+                        { name: "Bañarse", points: 75 },
+                        { name: "Leer (con preguntas)", points: 150 },
+                        { name: "Día sin pantalla", points: 250 },
+                        { name: "Ayudar en tarea del hogar", points: 125 },
+                        { name: "Hacer manualidades durante el día", points: 125 },
+                        { name: "Ver clases", points: 150 },
+                        { name: "Recoger juguetes", points: 75 },
+                        { name: "Ayudar a poner la mesa", points: 75 },
+                        { name: "Ayudar en cocina", points: 100 },
+                        { name: "Aprender algo nuevo y exponerlo", points: 200 }
+                    ];
+                    
+                    const batch = writeBatch(db);
+                    initialTasks.forEach(task => batch.set(doc(tasksRef), task));
+                    await batch.commit();
+                }
+            } catch (e) { console.error("Error al cargar tareas iniciales:", e); } 
+            finally { showLoading(false); }
+        }
+
+        async function populateInitialPenalties() {
+           try {
+                const querySnapshot = await getDocs(penaltiesRef);
+                if (querySnapshot.empty) {
+                    console.log("Cargando penalidades iniciales...");
+                    showLoading(true);
+                    const initialPenalties = [
+                        { name: "Faltar el respeto", points: 200 },
+                        { name: "Desobedecer", points: 150 },
+                        { name: "Desacatar una orden", points: 250 }
+                    ];
+                    
+                    const batch = writeBatch(db);
+                    initialPenalties.forEach(p => batch.set(doc(penaltiesRef), p));
+                    await batch.commit();
+                }
+           } catch (e) { console.error("Error al cargar penalidades iniciales:", e); } 
+           finally { showLoading(false); }
+        }
+
+        // --- Listeners de DB ---
+        function setupFirestoreListeners() {
+            onSnapshot(userProfileRef, (doc) => {
+                if (doc.exists()) {
+                    localTotalPoints = doc.data().totalPoints || 0;
+                    localLastReset = doc.data().lastReset || null;
+                } else { 
+                    setDoc(userProfileRef, { totalPoints: 0, lastReset: new Date().toISOString().split('T')[0] });
+                    localTotalPoints = 0;
+                    localLastReset = new Date().toISOString().split('T')[0];
+                }
+                
+                updatePointsDisplay();
+                checkDailyReset(); 
+                
+                if (!hasInitialDataLoaded) {
+                    populateInitialTasks();
+                    populateInitialPenalties();
+                    hasInitialDataLoaded = true; 
+                }
+            });
+            onSnapshot(tasksRef, (s) => {
+                localTasks = s.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderTasksList();
+                renderActiveTasksEditList();
+            });
+            onSnapshot(pendingTasksRef, (s) => {
+                localPendingTasks = s.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderTasksList();
+                renderPendingTasksList();
+            });
+            onSnapshot(rewardsRef, (s) => {
+                localRewards = s.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderRewardsList();
+            });
+            onSnapshot(redeemedRewardsRef, (s) => {
+                localRedeemedRewards = s.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderRedeemedRewardsList();
+            });
+            onSnapshot(penaltiesRef, (s) => {
+                localPenalties = s.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderPenaltiesApplyList();
+                renderPenaltiesEditList();
+            });
+        }
+    </script>
+    <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loader { animation: spin 1s linear infinite; }
+        .main-menu-button {
+            @apply w-full text-white font-bold rounded-2xl shadow-lg
+                   flex flex-col justify-center items-center transition-transform 
+                   duration-200 ease-in-out transform hover:scale-105 gap-2 px-4 py-6;
+        }
+        body { font-family: 'Segoe UI', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+    <div class="container mx-auto max-w-lg p-4 min-h-screen relative">
+        <!-- Overlay de Carga -->
+        <div id="loading-overlay" class="fixed inset-0 bg-white bg-opacity-80 flex justify-center items-center z-50 hidden">
+            <div class="loader border-4 border-blue-200 border-t-blue-600 rounded-full w-12 h-12"></div>
+        </div>
+
+        <!-- === Página de Login === -->
+        <div id="page-login" class="">
+             <header class="text-center mb-12 mt-16">
+                <h1 class="text-4xl font-extrabold text-blue-600 tracking-tight">App de Recompensas</h1>
+                <p class="text-xl text-gray-600 mt-4">¿Quién está usando la app?</p>
+            </header>
+            <div class="space-y-6">
+                <button id="btn-mode-child" class="w-full bg-green-500 text-white p-6 rounded-2xl shadow-lg flex flex-col items-center gap-2 hover:bg-green-600 transition-colors">
+                    <span class="text-5xl">👧</span>
+                    <span class="text-2xl font-bold">Modo Hija</span>
+                </button>
+                <button id="btn-mode-admin" class="w-full bg-blue-500 text-white p-6 rounded-2xl shadow-lg flex flex-col items-center gap-2 hover:bg-blue-600 transition-colors">
+                     <span class="text-5xl">👨‍👩‍👧</span>
+                    <span class="text-2xl font-bold">Modo Papá (Admin)</span>
+                </button>
+            </div>
+        </div>
+        
+        <!-- === Modal de PIN === -->
+        <div id="page-pin-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex justify-center items-center z-40 p-4">
+            <div class="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-sm">
+                <h2 class="text-2xl font-bold text-center text-gray-800 mb-4">Modo Admin</h2>
+                <p class="text-center text-gray-600 mb-6">Ingresa el PIN de 4 dígitos.</p>
+                <form id="form-pin" class="space-y-4">
+                    <input type="password" id="pin-input" pattern="[0-9]*" inputmode="numeric" maxlength="4" class="w-full p-4 text-3xl text-center tracking-widest border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:ring-blue-500" required>
+                    <p id="pin-error" class="text-red-500 text-center hidden">PIN incorrecto. Intenta de nuevo.</p>
+                    <button type="submit" class="w-full bg-blue-500 text-white p-4 rounded-lg font-bold text-lg hover:bg-blue-600 transition-colors">Entrar</button>
+                    <button type="button" id="btn-pin-cancel" class="w-full bg-gray-200 text-gray-700 p-3 rounded-lg font-bold hover:bg-gray-300 transition-colors">Cancelar</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- === Página Principal === -->
+        <div id="page-main" class="hidden">
+            <header class="flex justify-between items-center mb-8 mt-4">
+                <div class="text-left">
+                    <h1 class="text-4xl font-extrabold text-blue-600 tracking-tight">Recompensas</h1>
+                    <div id="total-points-header" class="text-2xl font-bold text-yellow-500 mt-1">...</div>
+                </div>
+                <button id="btn-logout" class="hidden bg-gray-200 text-gray-700 px-3 py-1 rounded-lg text-sm font-bold hover:bg-gray-300">Salir</button>
+            </header>
+            <nav class="grid grid-cols-2 gap-4">
+                <button id="btn-tasks" class="main-menu-button bg-blue-500">
+                    <img src="https://static.wixstatic.com/media/63d26f_d51dde8ebc2448e4b7b9024695d228dc~mv2.png" alt="Tareas" class="w-16 h-16 object-contain mx-auto" onerror="this.src='https://placehold.co/64x64/3B82F6/FFFFFF?text=Tareas'">
+                    <span class="text-lg text-center">Tareas Diarias</span>
+                </button>
+                <button id="btn-points" class="main-menu-button bg-green-500">
+                    <img src="https://static.wixstatic.com/media/63d26f_be54b83d9e814163a2855dad5df2ba90~mv2.png" alt="Puntos" class="w-16 h-16 object-contain mx-auto" onerror="this.src='https://placehold.co/64x64/22C55E/FFFFFF?text=Puntos'">
+                    <span class="text-lg text-center">Puntos</span>
+                </button>
+                <button id="btn-evaluate" class="main-menu-button bg-yellow-500 text-yellow-900 admin-only hidden">
+                    <img src="https://static.wixstatic.com/media/63d26f_1dddc78199a14d2e85b10b90ec28e8e0~mv2.png" alt="Evaluar" class="w-16 h-16 object-contain mx-auto" onerror="this.src='https://placehold.co/64x64/EAB308/FFFFFF?text=Evaluar'">
+                    <span class="text-lg text-center">Evaluar Tareas</span>
+                </button>
+                <button id="btn-redeem" class="main-menu-button bg-purple-500">
+                    <img src="https://static.wixstatic.com/media/63d26f_127c592fd4f142779dea0d23bc6813cb~mv2.png" alt="Canjear" class="w-16 h-16 object-contain mx-auto" onerror="this.src='https://placehold.co/64x64/A855F7/FFFFFF?text=Canjear'">
+                    <span class="text-lg text-center">Canjear Puntos</span>
+                </button>
+                <button id="btn-redeemed-list" class="main-menu-button bg-pink-500">
+                    <img src="https://static.wixstatic.com/media/63d26f_4005beb44e7846c3bf7d343f28aa1552~mv2.png" alt="Historial" class="w-16 h-16 object-contain mx-auto" onerror="this.src='https://placehold.co/64x64/EC4899/FFFFFF?text=Canjes'">
+                    <span class="text-lg text-center">Lista de Canjes</span>
+                </button>
+                 <button id="btn-penalties" class="main-menu-button bg-red-600 admin-only hidden">
+                    <img src="https://static.wixstatic.com/media/63d26f_dca1939b25bb471f92cbeb25d4e578bd~mv2.png" alt="Penalidad" class="w-16 h-16 object-contain mx-auto" onerror="this.src='https://placehold.co/64x64/DC2626/FFFFFF?text=Penalidad'">
+                    <span class="text-lg text-center">Penalidad</span>
+                </button>
+            </nav>
+        </div>
+
+        <!-- === Tareas Diarias === -->
+        <div id="page-tasks" class="hidden">
+            <header class="flex items-center mb-6">
+                <button class="btn-back text-blue-600 font-bold text-xl">⬅</button>
+                <h1 class="text-3xl font-bold text-blue-600 ml-4">Tareas Diarias</h1>
+            </header>
+            <div id="tasks-list-container" class="space-y-3 pb-20"></div>
+        </div>
+
+        <!-- === Puntos === -->
+        <div id="page-points" class="hidden">
+            <header class="flex items-center mb-6">
+                <button class="btn-back text-green-600 font-bold text-xl">⬅</button>
+                <h1 class="text-3xl font-bold text-green-600 ml-4">Mis Puntos</h1>
+            </header>
+            <div class="flex flex-col items-center justify-center p-10 bg-white rounded-3xl shadow-xl border-4 border-green-100">
+                <span class="text-8xl font-black text-green-500" id="total-points-display">0</span>
+                <span class="text-2xl text-green-700 font-bold mt-2">PUNTOS TOTALES</span>
+            </div>
+        </div>
+
+        <!-- === Evaluar Tareas (Admin) === -->
+        <div id="page-evaluate" class="hidden admin-only">
+            <header class="flex items-center mb-6">
+                <button class="btn-back text-yellow-600 font-bold text-xl">⬅</button>
+                <h1 class="text-3xl font-bold text-yellow-600 ml-4">Evaluar</h1>
+            </header>
+            
+            <div class="mb-8">
+                <h2 class="text-xl font-bold text-gray-800 mb-3">Pendientes de Aprobar</h2>
+                <div id="pending-tasks-list-container" class="space-y-3"></div>
+            </div>
+
+            <div class="bg-white p-4 rounded-xl shadow-md mb-6 admin-only">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Añadir Tarea</h2>
+                <form id="form-add-task" class="space-y-3">
+                    <input type="text" id="task-name" placeholder="Nombre de la tarea" class="w-full p-3 border rounded-lg" required>
+                    <input type="number" id="task-points" placeholder="Puntos" class="w-full p-3 border rounded-lg" required>
+                    <button type="submit" class="w-full bg-blue-500 text-white p-3 rounded-lg font-bold">Guardar</button>
+                </form>
+                
+                <form id="form-edit-task" class="hidden space-y-3 bg-blue-50 p-3 rounded-lg mt-3 border border-blue-200">
+                    <p class="font-bold text-blue-800">Editando Tarea:</p>
+                    <input type="text" id="edit-task-name" class="w-full p-3 border rounded-lg" required>
+                    <input type="number" id="edit-task-points" class="w-full p-3 border rounded-lg" required>
+                    <div class="flex gap-2">
+                        <button type="submit" class="flex-1 bg-green-500 text-white p-3 rounded-lg font-bold">Actualizar</button>
+                        <button type="button" id="btn-edit-task-cancel" class="flex-1 bg-gray-400 text-white p-3 rounded-lg font-bold">Cancelar</button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="bg-white p-4 rounded-xl shadow-md mb-20 admin-only">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Administrar Lista de Tareas</h2>
+                <div id="active-tasks-edit-list-container" class="space-y-2 max-h-60 overflow-y-auto"></div>
+            </div>
+        </div>
+
+        <!-- === Tienda === -->
+        <div id="page-redeem" class="hidden">
+            <header class="flex items-center mb-6">
+                <button class="btn-back text-purple-600 font-bold text-xl">⬅</button>
+                <h1 class="text-3xl font-bold text-purple-600 ml-4">Tienda</h1>
+            </header>
+            <div id="rewards-list-container" class="space-y-3 mb-8"></div>
+            
+            <div class="bg-white p-4 rounded-xl shadow-md mb-20 admin-only hidden">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Nueva Recompensa</h2>
+                <form id="form-add-reward" class="space-y-3">
+                    <input type="text" id="reward-name" placeholder="Nombre del premio" class="w-full p-3 border rounded-lg" required>
+                    <input type="number" id="reward-cost" placeholder="Costo" class="w-full p-3 border rounded-lg" required>
+                    <button type="submit" class="w-full bg-purple-500 text-white p-3 rounded-lg font-bold">Añadir</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- === Historial === -->
+        <div id="page-redeemed-list" class="hidden">
+            <header class="flex items-center mb-6">
+                <button class="btn-back text-pink-600 font-bold text-xl">⬅</button>
+                <h1 class="text-3xl font-bold text-pink-600 ml-4">Historial</h1>
+            </header>
+            <div id="redeemed-rewards-list-container" class="space-y-3 pb-20"></div>
+        </div>
+
+        <!-- === Penalidades (Admin) === -->
+        <div id="page-penalties" class="hidden admin-only">
+            <header class="flex items-center mb-6">
+                <button class="btn-back text-red-600 font-bold text-xl">⬅</button>
+                <h1 class="text-3xl font-bold text-red-600 ml-4">Penalidad</h1>
+            </header>
+            
+            <div class="mb-8">
+                <h2 class="text-xl font-bold text-gray-800 mb-3">Aplicar Penalidad</h2>
+                <div id="penalties-apply-list-container" class="space-y-3"></div>
+            </div>
+
+            <div class="bg-white p-4 rounded-xl shadow-md mb-6 admin-only">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Añadir Penalidad</h2>
+                <form id="form-add-penalty" class="space-y-3">
+                    <input type="text" id="penalty-name" placeholder="Nombre de la penalidad" class="w-full p-3 border rounded-lg" required>
+                    <input type="number" id="penalty-points" placeholder="Puntos (ej: 150)" class="w-full p-3 border rounded-lg" required>
+                    <button type="submit" class="w-full bg-red-500 text-white p-3 rounded-lg font-bold">Guardar</button>
+                </form>
+                
+                <form id="form-edit-penalty" class="hidden space-y-3 bg-red-50 p-3 rounded-lg mt-3 border border-red-200">
+                    <p class="font-bold text-red-800">Editando Penalidad:</p>
+                    <input type="text" id="edit-penalty-name" class="w-full p-3 border rounded-lg" required>
+                    <input type="number" id="edit-penalty-points" class="w-full p-3 border rounded-lg" required>
+                    <div class="flex gap-2">
+                        <button type="submit" class="flex-1 bg-green-500 text-white p-3 rounded-lg font-bold">Actualizar</button>
+                        <button type="button" id="btn-edit-penalty-cancel" class="flex-1 bg-gray-400 text-white p-3 rounded-lg font-bold">Cancelar</button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="bg-white p-4 rounded-xl shadow-md mb-20 admin-only">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Administrar Lista de Penalidades</h2>
+                <div id="penalties-edit-list-container" class="space-y-2 max-h-60 overflow-y-auto"></div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
