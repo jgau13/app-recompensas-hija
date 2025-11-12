@@ -35,15 +35,9 @@
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Configuración de Firebase ---
-        const firebaseConfig = {
-  apiKey: "AIzaSyBxtdn4hz3_8AvGgzFhspZDfA9qQjTLr1g",
-  authDomain: "app-recompensas-83a41.firebaseapp.com",
-  projectId: "app-recompensas-83a41",
-  storageBucket: "app-recompensas-83a41.firebasestorage.app",
-  messagingSenderId: "549233267820",
-  appId: "1:549233267820:web:e3cf16b44162ee4ed37449",
-  measurementId: "G-H95WWQL4X3"
-};
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : { apiKey: "TU_API_KEY_AQUI", authDomain: "TU_DOMINIO", projectId: "TU_PROJECT_ID" };
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-reward-app';
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -68,6 +62,7 @@
         let localLastReset = null;
         let currentEditingTaskId = null;
         let currentEditingPenaltyId = null;
+        let currentEditingRewardId = null; // <-- NUEVO
         let hasInitialDataLoaded = false; 
 
         // --- Elementos del DOM ---
@@ -134,6 +129,7 @@
                 pendingTasksList: document.getElementById('pending-tasks-list-container'),
                 activeTasksEditList: document.getElementById('active-tasks-edit-list-container'),
                 rewardsList: document.getElementById('rewards-list-container'),
+                rewardsEditList: document.getElementById('rewards-edit-list-container'), // <-- NUEVO
                 redeemedRewardsList: document.getElementById('redeemed-rewards-list-container'),
                 penaltiesApplyList: document.getElementById('penalties-apply-list-container'),
                 penaltiesEditList: document.getElementById('penalties-edit-list-container')
@@ -144,6 +140,7 @@
                 addTask: document.getElementById('form-add-task'),
                 editTask: document.getElementById('form-edit-task'),
                 addReward: document.getElementById('form-add-reward'),
+                editReward: document.getElementById('form-edit-reward'), // <-- NUEVO
                 addPenalty: document.getElementById('form-add-penalty'),
                 editPenalty: document.getElementById('form-edit-penalty')
             };
@@ -159,7 +156,10 @@
                 editTaskCancel: document.getElementById('btn-edit-task-cancel'),
                 editPenaltyName: document.getElementById('edit-penalty-name'),
                 editPenaltyPoints: document.getElementById('edit-penalty-points'),
-                editPenaltyCancel: document.getElementById('btn-edit-penalty-cancel')
+                editPenaltyCancel: document.getElementById('btn-edit-penalty-cancel'),
+                editRewardName: document.getElementById('edit-reward-name'), // <-- NUEVO
+                editRewardCost: document.getElementById('edit-reward-cost'), // <-- NUEVO
+                editRewardCancel: document.getElementById('btn-edit-reward-cancel') // <-- NUEVO
             };
         }
 
@@ -202,16 +202,14 @@
             buttons['btn-mode-child'].addEventListener('click', () => setMode('child'));
             buttons['btn-mode-admin'].addEventListener('click', () => showPage('page-pin-modal'));
             buttons['btn-pin-cancel'].addEventListener('click', () => {
-                elements.pinInput.value = '';
-                elements.pinError.classList.add('hidden');
+                if (elements.pinInput) elements.pinInput.value = '';
+                if (elements.pinError) elements.pinError.classList.add('hidden');
                 showPage('page-login');
             });
             forms['form-pin'].addEventListener('submit', handlePinSubmit);
             buttons['btn-logout'].addEventListener('click', logout);
             
             // Navegación principal
-            // *** CORRECCIÓN AQUÍ ***
-            // Se usa la notación de corchetes [] para coincidir con cómo se definieron en cacheDOMElements
             buttons['btn-tasks'].addEventListener('click', () => showPage('page-tasks'));
             buttons['btn-points'].addEventListener('click', () => showPage('page-points'));
             buttons['btn-evaluate'].addEventListener('click', () => showPage('page-evaluate'));
@@ -228,6 +226,8 @@
             forms.editTask.addEventListener('submit', handleEditTaskSubmit);
             elements.editTaskCancel.addEventListener('click', cancelEditTask);
             forms.addReward.addEventListener('submit', handleAddReward);
+            forms.editReward.addEventListener('submit', handleEditRewardSubmit); // <-- NUEVO
+            elements.editRewardCancel.addEventListener('click', cancelEditReward); // <-- NUEVO
             forms.addPenalty.addEventListener('submit', handleAddPenalty);
             forms.editPenalty.addEventListener('submit', handleEditPenaltySubmit);
             elements.editPenaltyCancel.addEventListener('click', cancelEditPenalty);
@@ -274,10 +274,10 @@
             const adminElements = document.querySelectorAll('.admin-only');
             if (mode === 'child') {
                 adminElements.forEach(el => el.classList.add('hidden'));
-                buttons['btn-logout'].classList.remove('hidden'); // <-- AHORA SE MUESTRA en modo hija
+                buttons['btn-logout'].classList.remove('hidden'); 
             } else if (mode === 'admin') {
                 adminElements.forEach(el => el.classList.remove('hidden'));
-                buttons['btn-logout'].classList.remove('hidden'); // Mostrar logout en modo admin
+                buttons['btn-logout'].classList.remove('hidden'); 
             } else {
                 adminElements.forEach(el => el.classList.add('hidden'));
                 buttons['btn-logout'].classList.add('hidden');
@@ -285,7 +285,6 @@
         }
 
         function showPage(pageId) {
-            // Primero, asegurarse que pages[pageId] no sea nulo
             if (pages[pageId]) {
                  Object.values(pages).forEach(page => {
                     if (page) page.classList.add('hidden');
@@ -310,23 +309,18 @@
                 console.log(`REINICIO DIARIO: Hoy es ${today}, último reseteo fue ${localLastReset}. Limpiando...`);
                 showLoading(true);
                 try {
-                    // Limpiar tareas pendientes
                     const pendingSnapshot = await getDocs(pendingTasksRef);
                     const batch = writeBatch(db);
                     pendingSnapshot.docs.forEach(d => batch.delete(d.ref));
-                    
-                    // Actualizar fecha de último reseteo
                     batch.set(userProfileRef, { lastReset: today }, { merge: true });
-                    
                     await batch.commit();
-                    localLastReset = today; // Actualizar estado local
+                    localLastReset = today; 
                 } catch (err) {
                     console.error("Error durante el reseteo diario:", err);
                 } finally {
                     showLoading(false);
                 }
             } else if (!localLastReset) {
-                // Si es la primera vez que se abre la app, guardar la fecha de hoy
                 console.log("Estableciendo fecha de reseteo inicial.");
                 await setDoc(userProfileRef, { lastReset: today }, { merge: true });
                 localLastReset = today;
@@ -451,6 +445,34 @@
             });
         }
 
+        // <-- NUEVA FUNCIÓN -->
+        function renderRewardsEditList() {
+            if (!containers.rewardsEditList) return;
+            containers.rewardsEditList.innerHTML = '';
+            if (localRewards.length === 0) return;
+            const sortedRewards = [...localRewards].sort((a, b) => a.name.localeCompare(b.name));
+
+            sortedRewards.forEach(reward => {
+                const rewardEl = document.createElement('div');
+                rewardEl.className = 'bg-white p-3 rounded-lg shadow flex justify-between items-center border border-gray-200';
+                rewardEl.innerHTML = `
+                    <div class="overflow-hidden">
+                        <span class="font-semibold text-gray-800 block truncate">${reward.name}</span>
+                        <span class="text-xs text-yellow-600">${reward.cost} pts</span>
+                    </div>
+                    <div class="flex gap-1 shrink-0">
+                        <button class="btn-edit-reward text-xl p-2 rounded-full hover:bg-blue-100" data-id="${reward.id}">✏️</button>
+                        <button class="btn-delete-reward text-xl p-2 rounded-full hover:bg-red-100" data-id="${reward.id}">🗑️</button>
+                    </div>
+                `;
+                rewardEl.querySelector('.btn-edit-reward').addEventListener('click', () => startEditReward(reward.id, reward.name, reward.cost));
+                rewardEl.querySelector('.btn-delete-reward').addEventListener('click', (e) => {
+                    handleDeleteReward(e.currentTarget.dataset.id);
+                });
+                containers.rewardsEditList.appendChild(rewardEl);
+            });
+        }
+
         function renderRedeemedRewardsList() {
             if (!containers.redeemedRewardsList) return;
             containers.redeemedRewardsList.innerHTML = '';
@@ -564,12 +586,29 @@
             forms.editPenalty.reset();
         }
 
+        // --- Lógica de Edición (Recompensas) ---
+        // <-- NUEVAS FUNCIONES -->
+        function startEditReward(id, name, cost) {
+            currentEditingRewardId = id;
+            elements.editRewardName.value = name;
+            elements.editRewardCost.value = cost;
+            forms.editReward.classList.remove('hidden');
+            forms.addReward.classList.add('hidden');
+        }
+        function cancelEditReward() {
+            currentEditingRewardId = null;
+            forms.editReward.classList.add('hidden');
+            forms.addReward.classList.remove('hidden');
+            forms.editReward.reset();
+        }
+
+
         // --- Handlers (Firebase) ---
         async function handleAddTask(e) {
             e.preventDefault();
             const name = e.target['task-name'].value;
             const points = parseInt(e.target['task-points'].value, 10);
-            if (!name || points <= 0) return; // No alert
+            if (!name || points <= 0) return;
             showLoading(true);
             try { await addDoc(tasksRef, { name, points }); e.target.reset(); } 
             catch (err) { console.error(err); } 
@@ -600,9 +639,31 @@
             e.preventDefault();
             const name = e.target['reward-name'].value;
             const cost = parseInt(e.target['reward-cost'].value, 10);
-            if (!name || cost <= 0) return; // No alert
+            if (!name || cost <= 0) return;
             showLoading(true);
             try { await addDoc(rewardsRef, { name, cost }); e.target.reset(); } 
+            catch (err) { console.error(err); } 
+            finally { showLoading(false); }
+        }
+
+        // <-- NUEVA FUNCIÓN -->
+        async function handleEditRewardSubmit(e) {
+            e.preventDefault();
+            if (!currentEditingRewardId) return;
+            const name = elements.editRewardName.value;
+            const cost = parseInt(elements.editRewardCost.value, 10);
+            showLoading(true);
+            try {
+                await updateDoc(doc(db, rewardsRef.path, currentEditingRewardId), { name, cost });
+                cancelEditReward();
+            } catch (err) { console.error(err); }
+            finally { showLoading(false); }
+        }
+
+        // <-- NUEVA FUNCIÓN -->
+        async function handleDeleteReward(id) {
+            showLoading(true);
+            try { await deleteDoc(doc(db, rewardsRef.path, id)); } 
             catch (err) { console.error(err); } 
             finally { showLoading(false); }
         }
@@ -634,7 +695,7 @@
         }
         
         async function handleRedeemReward(id, name, cost) {
-            if (localTotalPoints < cost) return; // No alert
+            if (localTotalPoints < cost) return;
             showLoading(true);
             try {
                 const newTotal = localTotalPoints - cost;
@@ -651,7 +712,7 @@
             e.preventDefault();
             const name = e.target['penalty-name'].value;
             const points = parseInt(e.target['penalty-points'].value, 10);
-            if (!name || points <= 0) return; // No alert
+            if (!name || points <= 0) return;
             showLoading(true);
             try { await addDoc(penaltiesRef, { name, points: Math.abs(points) }); e.target.reset(); } 
             catch (err) { console.error(err); } 
@@ -780,6 +841,7 @@
             onSnapshot(rewardsRef, (s) => {
                 localRewards = s.docs.map(d => ({ id: d.id, ...d.data() }));
                 renderRewardsList();
+                renderRewardsEditList(); // <-- NUEVO
             });
             onSnapshot(redeemedRewardsRef, (s) => {
                 localRedeemedRewards = s.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -946,14 +1008,33 @@
             </header>
             <div id="rewards-list-container" class="space-y-3 mb-8"></div>
             
-            <div class="bg-white p-4 rounded-xl shadow-md mb-20 admin-only hidden">
+            <!-- SECCIÓN ADMIN PARA AÑADIR/EDITAR RECOMPENSAS -->
+            <div class="bg-white p-4 rounded-xl shadow-md mb-6 admin-only hidden">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">Nueva Recompensa</h2>
                 <form id="form-add-reward" class="space-y-3">
                     <input type="text" id="reward-name" placeholder="Nombre del premio" class="w-full p-3 border rounded-lg" required>
                     <input type="number" id="reward-cost" placeholder="Costo" class="w-full p-3 border rounded-lg" required>
                     <button type="submit" class="w-full bg-purple-500 text-white p-3 rounded-lg font-bold">Añadir</button>
                 </form>
+
+                <!-- NUEVO FORMULARIO DE EDICIÓN (oculto) -->
+                <form id="form-edit-reward" class="hidden space-y-3 bg-blue-50 p-3 rounded-lg mt-3 border border-blue-200">
+                    <p class="font-bold text-blue-800">Editando Recompensa:</p>
+                    <input type="text" id="edit-reward-name" class="w-full p-3 border rounded-lg" required>
+                    <input type="number" id="edit-reward-cost" class="w-full p-3 border rounded-lg" required>
+                    <div class="flex gap-2">
+                        <button type="submit" class="flex-1 bg-green-500 text-white p-3 rounded-lg font-bold">Actualizar</button>
+                        <button type="button" id="btn-edit-reward-cancel" class="flex-1 bg-gray-400 text-white p-3 rounded-lg font-bold">Cancelar</button>
+                    </div>
+                </form>
             </div>
+
+            <!-- NUEVA SECCIÓN DE ADMIN PARA LISTAR/BORRAR -->
+            <div class="bg-white p-4 rounded-xl shadow-md mb-20 admin-only hidden">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Administrar Lista de Recompensas</h2>
+                <div id="rewards-edit-list-container" class="space-y-2 max-h-60 overflow-y-auto"></div>
+            </div>
+
         </div>
 
         <!-- === Historial === -->
