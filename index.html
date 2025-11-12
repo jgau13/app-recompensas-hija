@@ -35,6 +35,7 @@
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Configuración de Firebase ---
+        // Estas son las llaves de tu proyecto 'app-recompensas-83a41'
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : { 
@@ -70,7 +71,7 @@
         let localLastReset = null;
         let currentEditingTaskId = null;
         let currentEditingPenaltyId = null;
-        let currentEditingRewardId = null; // <-- NUEVO
+        let currentEditingRewardId = null; 
         let hasInitialDataLoaded = false; 
 
         // --- Elementos del DOM ---
@@ -94,12 +95,12 @@
                 setupFirestoreReferences(); 
                 setupFirestoreListeners(); 
                 
-                checkCachedMode(); // Decide si mostrar login o la app
+                checkCachedMode(); 
 
             } catch (error) {
                 console.error("Error crítico en la inicialización:", error);
                 if(elements.totalPointsDisplay) elements.totalPointsDisplay.textContent = "Error";
-                showPage('page-login'); // Mostrar login si hay error
+                showPage('page-login'); 
             } finally {
                 showLoading(false);
             }
@@ -137,7 +138,7 @@
                 pendingTasksList: document.getElementById('pending-tasks-list-container'),
                 activeTasksEditList: document.getElementById('active-tasks-edit-list-container'),
                 rewardsList: document.getElementById('rewards-list-container'),
-                rewardsEditList: document.getElementById('rewards-edit-list-container'), // <-- NUEVO
+                rewardsEditList: document.getElementById('rewards-edit-list-container'), 
                 redeemedRewardsList: document.getElementById('redeemed-rewards-list-container'),
                 penaltiesApplyList: document.getElementById('penalties-apply-list-container'),
                 penaltiesEditList: document.getElementById('penalties-edit-list-container')
@@ -148,7 +149,7 @@
                 addTask: document.getElementById('form-add-task'),
                 editTask: document.getElementById('form-edit-task'),
                 addReward: document.getElementById('form-add-reward'),
-                editReward: document.getElementById('form-edit-reward'), // <-- NUEVO
+                editReward: document.getElementById('form-edit-reward'), 
                 addPenalty: document.getElementById('form-add-penalty'),
                 editPenalty: document.getElementById('form-edit-penalty')
             };
@@ -165,9 +166,9 @@
                 editPenaltyName: document.getElementById('edit-penalty-name'),
                 editPenaltyPoints: document.getElementById('edit-penalty-points'),
                 editPenaltyCancel: document.getElementById('btn-edit-penalty-cancel'),
-                editRewardName: document.getElementById('edit-reward-name'), // <-- NUEVO
-                editRewardCost: document.getElementById('edit-reward-cost'), // <-- NUEVO
-                editRewardCancel: document.getElementById('btn-edit-reward-cancel') // <-- NUEVO
+                editRewardName: document.getElementById('edit-reward-name'), 
+                editRewardCost: document.getElementById('edit-reward-cost'), 
+                editRewardCancel: document.getElementById('btn-edit-reward-cancel') 
             };
         }
 
@@ -175,7 +176,7 @@
             return new Promise((resolve, reject) => {
                 onAuthStateChanged(auth, async (user) => {
                     if (user) {
-                        userId = user.uid;
+                        userId = user.uid; 
                         resolve(user);
                     } else if (initialAuthToken) {
                         try {
@@ -194,15 +195,20 @@
             });
         }
 
+        // --- RUTA COMPARTIDA (CORREGIDA) ---
         function setupFirestoreReferences() {
-            const userDocPath = `/artifacts/${appId}/users/${userId}`;
-            userProfileRef = doc(db, userDocPath);
+            // Corrección: La ruta base debe ser la colección. 
+            const publicDataPath = `/artifacts/${appId}/public`;
             
-            tasksRef = collection(db, userDocPath, 'tasks');
-            pendingTasksRef = collection(db, userDocPath, 'pendingTasks');
-            rewardsRef = collection(db, userDocPath, 'rewards');
-            redeemedRewardsRef = collection(db, userDocPath, 'redeemedRewards');
-            penaltiesRef = collection(db, userDocPath, 'penalties');
+            // Apuntamos al DOCUMENTO 'data' dentro de la colección 'public'
+            userProfileRef = doc(db, publicDataPath, 'data'); 
+            
+            // Las colecciones (tasks, rewards...) cuelgan DEBAJO del documento 'data'
+            tasksRef = collection(db, publicDataPath, 'data', 'tasks');
+            pendingTasksRef = collection(db, publicDataPath, 'data', 'pendingTasks');
+            rewardsRef = collection(db, publicDataPath, 'data', 'rewards');
+            redeemedRewardsRef = collection(db, publicDataPath, 'data', 'redeemedRewards');
+            penaltiesRef = collection(db, publicDataPath, 'data', 'penalties');
         }
 
         function setupUIListeners() {
@@ -234,8 +240,8 @@
             forms.editTask.addEventListener('submit', handleEditTaskSubmit);
             elements.editTaskCancel.addEventListener('click', cancelEditTask);
             forms.addReward.addEventListener('submit', handleAddReward);
-            forms.editReward.addEventListener('submit', handleEditRewardSubmit); // <-- NUEVO
-            elements.editRewardCancel.addEventListener('click', cancelEditReward); // <-- NUEVO
+            forms.editReward.addEventListener('submit', handleEditRewardSubmit); 
+            elements.editRewardCancel.addEventListener('click', cancelEditReward); 
             forms.addPenalty.addEventListener('submit', handleAddPenalty);
             forms.editPenalty.addEventListener('submit', handleEditPenaltySubmit);
             elements.editPenaltyCancel.addEventListener('click', cancelEditPenalty);
@@ -453,7 +459,6 @@
             });
         }
 
-        // <-- NUEVA FUNCIÓN -->
         function renderRewardsEditList() {
             if (!containers.rewardsEditList) return;
             containers.rewardsEditList.innerHTML = '';
@@ -595,7 +600,6 @@
         }
 
         // --- Lógica de Edición (Recompensas) ---
-        // <-- NUEVAS FUNCIONES -->
         function startEditReward(id, name, cost) {
             currentEditingRewardId = id;
             elements.editRewardName.value = name;
@@ -654,7 +658,6 @@
             finally { showLoading(false); }
         }
 
-        // <-- NUEVA FUNCIÓN -->
         async function handleEditRewardSubmit(e) {
             e.preventDefault();
             if (!currentEditingRewardId) return;
@@ -668,7 +671,6 @@
             finally { showLoading(false); }
         }
 
-        // <-- NUEVA FUNCIÓN -->
         async function handleDeleteReward(id) {
             showLoading(true);
             try { await deleteDoc(doc(db, rewardsRef.path, id)); } 
@@ -817,11 +819,13 @@
 
         // --- Listeners de DB ---
         function setupFirestoreListeners() {
+            // Listener para el documento de perfil (puntos y reseteo)
             onSnapshot(userProfileRef, (doc) => {
                 if (doc.exists()) {
                     localTotalPoints = doc.data().totalPoints || 0;
                     localLastReset = doc.data().lastReset || null;
                 } else { 
+                    // Si el documento no existe, lo crea con valores iniciales
                     setDoc(userProfileRef, { totalPoints: 0, lastReset: new Date().toISOString().split('T')[0] });
                     localTotalPoints = 0;
                     localLastReset = new Date().toISOString().split('T')[0];
@@ -830,36 +834,50 @@
                 updatePointsDisplay();
                 checkDailyReset(); 
                 
+                // Carga los datos iniciales solo la primera vez que se conecta
                 if (!hasInitialDataLoaded) {
                     populateInitialTasks();
                     populateInitialPenalties();
                     hasInitialDataLoaded = true; 
                 }
+            }, (error) => {
+                console.error("Error en listener de userProfile:", error);
+                // Aquí podrías mostrar un error en la UI si falla la conexión principal
             });
+
+            // Listener para Tareas
             onSnapshot(tasksRef, (s) => {
                 localTasks = s.docs.map(d => ({ id: d.id, ...d.data() }));
                 renderTasksList();
                 renderActiveTasksEditList();
-            });
+            }, (error) => console.error("Error en listener de tasksRef:", error));
+
+            // Listener para Tareas Pendientes
             onSnapshot(pendingTasksRef, (s) => {
                 localPendingTasks = s.docs.map(d => ({ id: d.id, ...d.data() }));
                 renderTasksList();
                 renderPendingTasksList();
-            });
+            }, (error) => console.error("Error en listener de pendingTasksRef:", error));
+
+            // Listener para Recompensas
             onSnapshot(rewardsRef, (s) => {
                 localRewards = s.docs.map(d => ({ id: d.id, ...d.data() }));
                 renderRewardsList();
-                renderRewardsEditList(); // <-- NUEVO
-            });
+                renderRewardsEditList(); 
+            }, (error) => console.error("Error en listener de rewardsRef:", error));
+
+            // Listener para Recompensas Canjeadas
             onSnapshot(redeemedRewardsRef, (s) => {
                 localRedeemedRewards = s.docs.map(d => ({ id: d.id, ...d.data() }));
                 renderRedeemedRewardsList();
-            });
+            }, (error) => console.error("Error en listener de redeemedRewardsRef:", error));
+
+            // Listener para Penalidades
             onSnapshot(penaltiesRef, (s) => {
                 localPenalties = s.docs.map(d => ({ id: d.id, ...d.data() }));
                 renderPenaltiesApplyList();
                 renderPenaltiesEditList();
-            });
+            }, (error) => console.error("Error en listener de penaltiesRef:", error));
         }
     </script>
     <style>
@@ -1025,7 +1043,6 @@
                     <button type="submit" class="w-full bg-purple-500 text-white p-3 rounded-lg font-bold">Añadir</button>
                 </form>
 
-                <!-- NUEVO FORMULARIO DE EDICIÓN (oculto) -->
                 <form id="form-edit-reward" class="hidden space-y-3 bg-blue-50 p-3 rounded-lg mt-3 border border-blue-200">
                     <p class="font-bold text-blue-800">Editando Recompensa:</p>
                     <input type="text" id="edit-reward-name" class="w-full p-3 border rounded-lg" required>
@@ -1037,7 +1054,6 @@
                 </form>
             </div>
 
-            <!-- NUEVA SECCIÓN DE ADMIN PARA LISTAR/BORRAR -->
             <div class="bg-white p-4 rounded-xl shadow-md mb-20 admin-only hidden">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">Administrar Lista de Recompensas</h2>
                 <div id="rewards-edit-list-container" class="space-y-2 max-h-60 overflow-y-auto"></div>
