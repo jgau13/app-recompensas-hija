@@ -35,9 +35,15 @@
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Configuración de Firebase ---
-        const firebaseConfig = typeof __firebase_config !== 'undefined' 
-            ? JSON.parse(__firebase_config) 
-            : { apiKey: "TU_API_KEY_AQUI", authDomain: "TU_DOMINIO", projectId: "TU_PROJECT_ID" };
+        const firebaseConfig = {
+  apiKey: "AIzaSyBxtdn4hz3_8AvGgzFhspZDfA9qQjTLr1g",
+  authDomain: "app-recompensas-83a41.firebaseapp.com",
+  projectId: "app-recompensas-83a41",
+  storageBucket: "app-recompensas-83a41.firebasestorage.app",
+  messagingSenderId: "549233267820",
+  appId: "1:549233267820:web:e3cf16b44162ee4ed37449",
+  measurementId: "G-H95WWQL4X3"
+};
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-reward-app';
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
